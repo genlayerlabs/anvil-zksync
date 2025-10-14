@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/matter-labs/anvil-zksync/compare/v0.6.11...v0.7.0) (2025-10-14)
+
+
+### Features
+
+* Release-As: 0.7.0 ([#773](https://github.com/matter-labs/anvil-zksync/issues/773)) ([b9ae6b5](https://github.com/matter-labs/anvil-zksync/commit/b9ae6b50cf197ec875b88314520db2ce475519f4))
+* update release-please config ([#775](https://github.com/matter-labs/anvil-zksync/issues/775)) ([3a531cc](https://github.com/matter-labs/anvil-zksync/commit/3a531cc09008ecbd9330c71157ff064b6fdcc46e))
+
 ## [0.6.11](https://github.com/matter-labs/anvil-zksync/compare/v0.6.10...v0.6.11) (2025-10-08)
 
 
