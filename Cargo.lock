@@ -811,7 +811,7 @@ dependencies = [
 
 [[package]]
 name = "anvil-zksync"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "alloy",
  "anvil_zksync_api_server",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "anvil_zksync_api_decl"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "anvil_zksync_types",
  "jsonrpsee",
@@ -861,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "anvil_zksync_api_server"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "anvil_zksync_api_decl",
  "anvil_zksync_common",
@@ -888,7 +888,7 @@ dependencies = [
 
 [[package]]
 name = "anvil_zksync_common"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "alloy",
  "anstream",
@@ -911,7 +911,7 @@ dependencies = [
 
 [[package]]
 name = "anvil_zksync_config"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "alloy",
  "anvil_zksync_common",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "anvil_zksync_console"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "alloy",
  "anvil_zksync_common",
@@ -942,7 +942,7 @@ dependencies = [
 
 [[package]]
 name = "anvil_zksync_core"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "alloy",
  "anvil_zksync_common",
@@ -998,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "anvil_zksync_l1_sidecar"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "alloy",
  "anvil_zksync_common",
@@ -1023,7 +1023,7 @@ dependencies = [
 
 [[package]]
 name = "anvil_zksync_traces"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "alloy",
  "anstyle",
@@ -1047,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "anvil_zksync_types"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "anvil_zksync_common",
  "clap",
@@ -9654,7 +9654,7 @@ dependencies = [
 
 [[package]]
 name = "zksync_error"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "anyhow",
  "lazy_static",

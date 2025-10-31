@@ -16,13 +16,13 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::time::Duration;
 use zksync_types::fee_model::{BaseTokenConversionRatio, FeeModelConfigV2};
-use zksync_types::{ProtocolVersionId, U256};
+use zksync_types::{H256, ProtocolVersionId, U256};
 
 pub const VERSION_MESSAGE: &str = concat!(env!("CARGO_PKG_VERSION"));
 
 /// Protocol version that is used in anvil-zksync by default. Should match what is currently
 /// deployed to mainnet.
-pub const DEFAULT_PROTOCOL_VERSION: ProtocolVersionId = ProtocolVersionId::Version28;
+pub const DEFAULT_PROTOCOL_VERSION: ProtocolVersionId = ProtocolVersionId::Version29;
 
 const BANNER: &str = r#"
                       _  _         _____ _  __
@@ -40,6 +40,13 @@ pub struct ForkPrintInfo {
     pub block_timestamp: String,
     pub fork_block_hash: String,
     pub fee_model_config_v2: FeeModelConfigV2,
+}
+
+#[derive(Debug, Clone)]
+pub struct DebugTraceConfig {
+    pub fork_url: String,
+    pub tx: H256,
+    pub only_top: bool,
 }
 
 /// Defines the configuration parameters for the [InMemoryNode].
@@ -145,6 +152,8 @@ pub struct TestNodeConfig {
     pub auto_execute_l1: bool,
     /// Base token configuration
     pub base_token_config: BaseTokenConfig,
+    /// Configuration for debug tracing
+    pub debug_trace: Option<DebugTraceConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +262,9 @@ impl Default for TestNodeConfig {
             l1_config: None,
             auto_execute_l1: false,
             base_token_config: BaseTokenConfig::default(),
+
+            // Debug trace configuration
+            debug_trace: None,
         }
     }
 }
@@ -1081,5 +1093,16 @@ Address: {address}
     pub fn with_base_token_config(mut self, base_token_config: BaseTokenConfig) -> Self {
         self.base_token_config = base_token_config;
         self
+    }
+
+    #[must_use]
+    pub fn with_debug_trace(mut self, debug: Option<DebugTraceConfig>) -> Self {
+        self.debug_trace = debug;
+        self
+    }
+
+    /// Returns the debug-trace config if present.
+    pub fn get_debug_trace(&self) -> Option<&DebugTraceConfig> {
+        self.debug_trace.as_ref()
     }
 }
