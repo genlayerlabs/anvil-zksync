@@ -21,8 +21,9 @@ use zksync_types::l2::L2Tx;
 use zksync_types::writes::StateDiffRecord;
 use zksync_types::{
     AccountTreeId, Address, ExecuteTransactionCommon, H256, L1BatchNumber, L2BlockNumber,
-    ProtocolVersionId, SYSTEM_CONTEXT_ADDRESS, SYSTEM_CONTEXT_BLOCK_INFO_POSITION, StorageKey, SLChainId, U64,
-    U256, api, api::BlockId, h256_to_u256, web3::Bytes, settlement::SettlementLayer,
+    ProtocolVersionId, SLChainId, SYSTEM_CONTEXT_ADDRESS, SYSTEM_CONTEXT_BLOCK_INFO_POSITION,
+    StorageKey, U64, U256, api, api::BlockId, h256_to_u256, settlement::SettlementLayer,
+    web3::Bytes,
 };
 
 /// Read-only view on blockchain state.

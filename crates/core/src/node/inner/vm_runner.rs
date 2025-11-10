@@ -40,10 +40,12 @@ use zksync_multivm::interface::{
     TxExecutionMode, VmEvent, VmExecutionResultAndLogs,
 };
 use zksync_multivm::utils::get_batch_base_fee;
-use zksync_multivm::zk_evm_latest::ethereum_types::{Address, H160, U64, U256};
+use zksync_multivm::zk_evm_latest::ethereum_types::{H160, U64, U256};
 use zksync_types::block::L2BlockHasher;
 use zksync_types::bytecode::BytecodeHash;
-use zksync_types::commitment::{PubdataParams, PubdataType};
+use zksync_types::commitment::{
+    L2DACommitmentScheme, L2PubdataValidator, PubdataParams, PubdataType,
+};
 use zksync_types::fee_model::FeeModelConfigV2;
 use zksync_types::web3::Bytes;
 use zksync_types::{
@@ -676,7 +678,8 @@ mod test {
     use zksync_types::l2::{L2Tx, TransactionType};
     use zksync_types::utils::deployed_address_create;
     use zksync_types::{
-        H256, K256PrivateKey, L1BatchNumber, L2ChainId, Nonce, ProtocolVersionId, u256_to_h256,
+        Address, H256, K256PrivateKey, L1BatchNumber, L2ChainId, Nonce, ProtocolVersionId,
+        settlement::SettlementLayer, u256_to_h256,
     };
 
     struct VmRunnerTester {
@@ -786,12 +789,13 @@ mod test {
                     max_virtual_blocks_to_create: 1,
                     interop_roots: vec![],
                 },
+                settlement_layer: SettlementLayer::for_tests(),
             };
             let mut executor = self.vm_runner.executor_factory.init_batch(
                 self.vm_runner.fork_storage.clone(),
                 batch_env.clone(),
                 system_env,
-                PubdataParams::default(),
+                PubdataParams::genesis(),
             );
 
             let mut log_index = 0;

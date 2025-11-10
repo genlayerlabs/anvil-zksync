@@ -14,9 +14,9 @@ use zksync_types::{
     CREATE2_FACTORY_ADDRESS, EC_ADD_PRECOMPILE_ADDRESS, EC_MUL_PRECOMPILE_ADDRESS,
     EC_PAIRING_PRECOMPILE_ADDRESS, ECRECOVER_PRECOMPILE_ADDRESS, EVENT_WRITER_ADDRESS,
     EVM_GAS_MANAGER_ADDRESS, EVM_HASHES_STORAGE_ADDRESS, EVM_PREDEPLOYS_MANAGER_ADDRESS,
-    IDENTITY_ADDRESS, IMMUTABLE_SIMULATOR_STORAGE_ADDRESS, KECCAK256_PRECOMPILE_ADDRESS,
-    KNOWN_CODES_STORAGE_ADDRESS, L1_MESSENGER_ADDRESS, L2_ASSET_ROUTER_ADDRESS,
-    L2_ASSET_TRACKER_ADDRESS, L2_BASE_TOKEN_ADDRESS, L2_BRIDGEHUB_ADDRESS,
+    GW_ASSET_TRACKER_ADDRESS, IDENTITY_ADDRESS, IMMUTABLE_SIMULATOR_STORAGE_ADDRESS,
+    KECCAK256_PRECOMPILE_ADDRESS, KNOWN_CODES_STORAGE_ADDRESS, L1_MESSENGER_ADDRESS,
+    L2_ASSET_ROUTER_ADDRESS, L2_ASSET_TRACKER_ADDRESS, L2_BASE_TOKEN_ADDRESS, L2_BRIDGEHUB_ADDRESS,
     L2_CHAIN_ASSET_HANDLER_ADDRESS, L2_GENESIS_UPGRADE_ADDRESS, L2_INTEROP_CENTER_ADDRESS,
     L2_INTEROP_HANDLER_ADDRESS, L2_INTEROP_ROOT_STORAGE_ADDRESS, L2_MESSAGE_ROOT_ADDRESS,
     L2_MESSAGE_VERIFICATION_ADDRESS, L2_NATIVE_TOKEN_VAULT_ADDRESS, L2_WRAPPED_BASE_TOKEN_IMPL,
@@ -158,7 +158,7 @@ const V29: ProtocolVersionId = ProtocolVersionId::Version29;
 const V30: ProtocolVersionId = ProtocolVersionId::Version30;
 
 /// Triple containing a name of a contract, its L2 address and minimum supported protocol version
-static BUILTIN_CONTRACT_LOCATIONS: [(&str, Address, ProtocolVersionId); 44] = [
+static BUILTIN_CONTRACT_LOCATIONS: [(&str, Address, ProtocolVersionId); 45] = [
     // *************************************************
     // *     Kernel contracts (base offset 0x8000)     *
     // *************************************************
@@ -207,6 +207,7 @@ static BUILTIN_CONTRACT_LOCATIONS: [(&str, Address, ProtocolVersionId); 44] = [
     ("ChainAssetHandler", L2_CHAIN_ASSET_HANDLER_ADDRESS, V29),
     ("InteropCenter", L2_INTEROP_CENTER_ADDRESS, V30),
     ("L2AssetTracker", L2_ASSET_TRACKER_ADDRESS, V30),
+    ("GWAssetTracker", GW_ASSET_TRACKER_ADDRESS, V30),
     ("InteropHandler", L2_INTEROP_HANDLER_ADDRESS, V30),
     // *************************************************
     // *                 Precompiles                   *
@@ -238,7 +239,7 @@ static BUILTIN_CONTRACT_LOCATIONS: [(&str, Address, ProtocolVersionId); 44] = [
 /// *************************************************************
 /// *  Non-kernel contracts (base offset 0x010000)             *
 /// *************************************************************
-pub static NON_KERNEL_CONTRACT_LOCATIONS: [(&str, Address, ProtocolVersionId); 11] = [
+pub static NON_KERNEL_CONTRACT_LOCATIONS: [(&str, Address, ProtocolVersionId); 15] = [
     ("Create2Factory", CREATE2_FACTORY_ADDRESS, V26),
     ("L2GenesisUpgrade", L2_GENESIS_UPGRADE_ADDRESS, V26),
     ("L2Bridgehub", L2_BRIDGEHUB_ADDRESS, V26),
@@ -254,6 +255,10 @@ pub static NON_KERNEL_CONTRACT_LOCATIONS: [(&str, Address, ProtocolVersionId); 1
         V29,
     ),
     ("ChainAssetHandler", L2_CHAIN_ASSET_HANDLER_ADDRESS, V29),
+    ("InteropCenter", L2_INTEROP_CENTER_ADDRESS, V30),
+    ("L2AssetTracker", L2_ASSET_TRACKER_ADDRESS, V30),
+    ("GWAssetTracker", GW_ASSET_TRACKER_ADDRESS, V30),
+    ("InteropHandler", L2_INTEROP_HANDLER_ADDRESS, V30),
 ];
 
 pub fn get_deployed_contracts(

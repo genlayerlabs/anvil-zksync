@@ -615,9 +615,11 @@ async fn start_program(opt: Cli) -> Result<(), AnvilZksyncError> {
             json!([args.tx])
         };
 
-        let rpc_url = args.rpc_url.to_config().url.to_string();
+        let fork_url = args.fork_url.to_config().url.to_string();
         let result_value: serde_json::Value =
-            match rpc_call::<serde_json::Value>(&rpc_url, "debug_traceTransaction", params).await {
+            match utils::rpc_call::<serde_json::Value>(&fork_url, "debug_traceTransaction", params)
+                .await
+            {
                 Ok(v) => v,
                 Err(e) => {
                     sh_println!("debug_traceTransaction failed: {e}");

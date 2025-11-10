@@ -183,6 +183,7 @@ impl InMemoryNode {
             proof,
             root,
             id: l1_log_index as u32,
+            batch_number: l1_batch_number,
         }))
     }
 
