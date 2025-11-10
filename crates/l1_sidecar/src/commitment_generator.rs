@@ -11,7 +11,7 @@ use zksync_types::commitment::{
     L1BatchWithMetadata,
 };
 use zksync_types::writes::StateDiffRecord;
-use zksync_types::{Address, H256, settlement::SettlementLayer, SLChainId};
+use zksync_types::{Address, H256, SLChainId, settlement::SettlementLayer};
 
 /// Node component that can generate batch's metadata (with commitment) on demand.
 #[derive(Debug, Clone)]

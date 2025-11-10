@@ -662,13 +662,6 @@ async fn start_program(opt: Cli) -> Result<(), AnvilZksyncError> {
         };
         let tx_result_for_arena = VmExecutionResultAndLogs::mock(exec_result);
 
-        if args.raw {
-            sh_println!(
-                "Raw debug payload:\n{}",
-                serde_json::to_string_pretty(&result_value).unwrap_or_default()
-            );
-        }
-
         let envelope = serde_json::json!({ "result": result_value });
         let raw_str = serde_json::to_string(&envelope).unwrap();
         let call_traces = match calls_from_debug_json(&raw_str) {
