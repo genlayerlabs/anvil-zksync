@@ -102,6 +102,17 @@ pub fn bytecode_from_slice(artifact_name: &str, contents: &[u8]) -> Vec<u8> {
 }
 
 pub fn load_builtin_contract(protocol_version: ProtocolVersionId, artifact_name: &str) -> Vec<u8> {
+    let renamed_artifact;
+    let mut artifact_name = artifact_name;
+
+    // Bridgehub and MessageRoot were renamed to L2... in V30
+    if protocol_version >= ProtocolVersionId::Version30
+        && (artifact_name == "Bridgehub" || artifact_name == "MessageRoot")
+    {
+        renamed_artifact = format!("L2{}", artifact_name);
+        artifact_name = &renamed_artifact;
+    }
+
     let artifact_path = format!("{artifact_name}.json");
 
     bytecode_from_slice(
@@ -192,7 +203,7 @@ static BUILTIN_CONTRACT_LOCATIONS: [(&str, Address, ProtocolVersionId); 45] = [
     // *************************************************
     ("Create2Factory", CREATE2_FACTORY_ADDRESS, V26),
     ("L2GenesisUpgrade", L2_GENESIS_UPGRADE_ADDRESS, V26),
-    ("L2Bridgehub", L2_BRIDGEHUB_ADDRESS, V26),
+    ("Bridgehub", L2_BRIDGEHUB_ADDRESS, V26),
     ("L2AssetRouter", L2_ASSET_ROUTER_ADDRESS, V26),
     ("L2NativeTokenVault", L2_NATIVE_TOKEN_VAULT_ADDRESS, V26),
     ("MessageRoot", L2_MESSAGE_ROOT_ADDRESS, V26),
@@ -242,7 +253,7 @@ static BUILTIN_CONTRACT_LOCATIONS: [(&str, Address, ProtocolVersionId); 45] = [
 pub static NON_KERNEL_CONTRACT_LOCATIONS: [(&str, Address, ProtocolVersionId); 15] = [
     ("Create2Factory", CREATE2_FACTORY_ADDRESS, V26),
     ("L2GenesisUpgrade", L2_GENESIS_UPGRADE_ADDRESS, V26),
-    ("L2Bridgehub", L2_BRIDGEHUB_ADDRESS, V26),
+    ("Bridgehub", L2_BRIDGEHUB_ADDRESS, V26),
     ("L2AssetRouter", L2_ASSET_ROUTER_ADDRESS, V26),
     ("L2NativeTokenVault", L2_NATIVE_TOKEN_VAULT_ADDRESS, V26),
     ("MessageRoot", L2_MESSAGE_ROOT_ADDRESS, V26),
