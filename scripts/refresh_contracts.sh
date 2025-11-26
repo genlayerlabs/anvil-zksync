@@ -24,8 +24,8 @@ case $PROTOCOL_VERSION in
     ERA_CONTRACTS_GIT_COMMIT=4691b728fa9c411f1286bb574d2698a0aa841f70
     ;;
   v30)
-    # TODO: update commit hash so its HEAD of anvil-zksync-0.6.x-draft-v30
-    ERA_CONTRACTS_GIT_COMMIT=e1864ce18b77a9e75ab54da688e4fb23aec9851b
+    # HEAD of anvil-zksync-0.6.x-draft-v30
+    ERA_CONTRACTS_GIT_COMMIT=dfddc2c2471cd29aae5681dc31391c54c8131814
     ;;
   *)
     echo "Unrecognized/unsupported protocol version: $PROTOCOL_VERSION"
