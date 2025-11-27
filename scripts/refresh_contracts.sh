@@ -52,12 +52,12 @@ L1_ARTIFACTS_SRC_DIR=contracts/l1-contracts/zkout
 L2_ARTIFACTS_SRC_DIR=contracts/l2-contracts/zkout
 SYSTEM_ARTIFACTS_SRC_DIR=contracts/system-contracts/zkout
 
-l1_artifacts=("L2MessageRoot" "L2Bridgehub" "L2AssetRouter" "InteropCenter" "L1AssetTracker" "L2AssetTracker" "InteropHandler" "L2NativeTokenVault" "L2WrappedBaseToken" "L2MessageVerification" "L2ChainAssetHandler")
+l1_artifacts=("L2AssetRouter" "InteropCenter" "L1AssetTracker" "L2AssetTracker" "InteropHandler" "L2NativeTokenVault" "L2WrappedBaseToken")
 l2_artifacts=("TimestampAsserter")
 system_contracts_sol=(
-  "AccountCodeStorage" "BootloaderUtilities" "Compressor" "ComplexUpgrader" "ContractDeployer" "DefaultAccount"
+  "AccountCodeStorage" "BootloaderUtilities" "Compressor" "ContractDeployer" "DefaultAccount"
   "DefaultAccountNoSecurity" "EmptyContract" "ImmutableSimulator" "KnownCodesStorage" "L1Messenger" "L2BaseToken"
-  "MsgValueSimulator" "NonceHolder" "SystemContext" "PubdataChunkPublisher" "Create2Factory" "L2GenesisUpgrade"
+  "MsgValueSimulator" "NonceHolder" "SystemContext" "PubdataChunkPublisher" "Create2Factory"
   "SloadContract"
 )
 system_contracts_yul=("EventWriter")
@@ -89,9 +89,22 @@ fi
 
 if [[ ! $PROTOCOL_VERSION < v29 ]]; then
   # New L1 contracts that were added in v29
-  l1_artifacts+=("ChainAssetHandler" "L2MessageVerification")
+  l1_artifacts+=("L2MessageVerification")
   # New system contract that was added in v29
   system_contracts_sol+=("L2InteropRootStorage")
+fi
+
+# Handle the naming change of ComplexUpgrader and L2GenesisUpgrade contracts
+if [[ $PROTOCOL_VERSION < v30 ]]; then
+  l1_artifacts+=("MessageRoot" "Bridgehub" "ChainAssetHandler")
+  system_contracts_sol+=("ComplexUpgrader" "L2GenesisUpgrade")
+else
+  l1_artifacts+=("L2MessageRoot" "L2Bridgehub" "L2ChainAssetHandler" "L2ComplexUpgrader" "L2GenesisUpgrade")
+fi
+
+if [[ ! $PROTOCOL_VERSION < v30 ]]; then
+  l1_artifacts+=("GWAssetTracker")
+  system_contracts_sol+=("InteropCenter" "L2AssetTracker" "InteropHandler")
 fi
 
 for artifact in "${l1_artifacts[@]}"; do
