@@ -105,9 +105,12 @@ pub fn load_builtin_contract(protocol_version: ProtocolVersionId, artifact_name:
     let renamed_artifact;
     let mut artifact_name = artifact_name;
 
-    // Bridgehub and MessageRoot were renamed to L2... in V30
+    // Bridgehub, MessageRoot, ComplexUpgrader, and ChainAssetHandler were renamed to L2... in V30
     if protocol_version >= ProtocolVersionId::Version30
-        && (artifact_name == "Bridgehub" || artifact_name == "MessageRoot")
+        && (artifact_name == "Bridgehub"
+            || artifact_name == "MessageRoot"
+            || artifact_name == "ComplexUpgrader"
+            || artifact_name == "ChainAssetHandler")
     {
         renamed_artifact = format!("L2{}", artifact_name);
         artifact_name = &renamed_artifact;
