@@ -36,7 +36,8 @@ use once_cell::sync::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
+use zksync_web3_decl::types::PubSubResult;
 use zksync_contracts::{BaseSystemContracts, BaseSystemContractsHashes};
 use zksync_error::anvil_zksync::gas_estim;
 use zksync_error::anvil_zksync::node::{
@@ -99,6 +100,12 @@ pub struct InMemoryNodeInner {
     /// Keeps track of historical states indexed via block hash. Limited to [MAX_PREVIOUS_STATES].
     previous_states: IndexMap<H256, HashMap<StorageKey, StorageValue>>,
     storage_key_layout: StorageKeyLayout,
+    /// Broadcast sender for `newHeads` WS subscriptions.
+    pub block_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+    /// Broadcast sender for `logs` WS subscriptions.
+    pub log_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+    /// Notified on reset/revert to terminate active WS subscriptions.
+    pub reset_notify: Arc<tokio::sync::Notify>,
 }
 
 impl InMemoryNodeInner {
@@ -115,6 +122,9 @@ impl InMemoryNodeInner {
         impersonation: ImpersonationManager,
         system_contracts: SystemContracts,
         storage_key_layout: StorageKeyLayout,
+        block_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+        log_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+        reset_notify: Arc<tokio::sync::Notify>,
     ) -> Self {
         InMemoryNodeInner {
             blockchain,
@@ -129,6 +139,9 @@ impl InMemoryNodeInner {
             rich_accounts: HashSet::new(),
             previous_states: Default::default(),
             storage_key_layout,
+            block_subscription_tx,
+            log_subscription_tx,
+            reset_notify,
         }
     }
 
@@ -363,6 +376,8 @@ impl InMemoryNodeInner {
             filters.notify_new_pending_transaction(tx_result.receipt.transaction_hash);
             for log in &tx_result.receipt.logs {
                 filters.notify_new_log(log, block_ctxs[0].miniblock.into());
+                // Push to WS log subscribers
+                let _ = self.log_subscription_tx.send(Arc::new(PubSubResult::Log(log.clone())));
             }
         }
         drop(filters);
@@ -459,6 +474,36 @@ impl InMemoryNodeInner {
             filters.notify_new_block(block_ctx.hash);
         }
         drop(filters);
+
+        // Push block headers to WS subscribers.
+        // Retrieve the sealed block to build a full BlockHeader.
+        let blockchain = self.blockchain.read().await;
+        for block_ctx in &block_ctxs {
+            if let Some(sealed_block) = blockchain.blocks.get(&block_ctx.hash) {
+                use zksync_types::web3::BlockHeader;
+                let header = BlockHeader {
+                    hash: Some(sealed_block.hash),
+                    parent_hash: sealed_block.parent_hash,
+                    uncles_hash: sealed_block.uncles_hash,
+                    author: sealed_block.author,
+                    state_root: sealed_block.state_root,
+                    transactions_root: sealed_block.transactions_root,
+                    receipts_root: sealed_block.receipts_root,
+                    number: Some(sealed_block.number),
+                    gas_used: sealed_block.gas_used,
+                    gas_limit: sealed_block.gas_limit,
+                    base_fee_per_gas: Some(sealed_block.base_fee_per_gas),
+                    extra_data: sealed_block.extra_data.clone(),
+                    logs_bloom: sealed_block.logs_bloom,
+                    timestamp: sealed_block.timestamp,
+                    difficulty: sealed_block.difficulty,
+                    mix_hash: Some(sealed_block.mix_hash),
+                    nonce: Some(sealed_block.nonce),
+                };
+                let _ = self.block_subscription_tx.send(Arc::new(PubSubResult::Header(header)));
+            }
+        }
+        drop(blockchain);
 
         Ok(L2BlockNumber(block_ctxs[0].miniblock as u32))
     }
@@ -1013,6 +1058,8 @@ impl InMemoryNodeInner {
         // FIXME: This logic is incorrect but it doesn't matter as filters should not be a part of
         //        snapshots anyway
         self.filters = Arc::new(RwLock::new(snapshot.filters));
+        // Terminate active WS subscriptions — chain state has changed
+        self.reset_notify.notify_waiters();
         self.impersonation.set_state(snapshot.impersonation_state);
         self.rich_accounts = snapshot.rich_accounts;
         self.previous_states = snapshot.previous_states;
@@ -1168,6 +1215,8 @@ impl InMemoryNodeInner {
         );
 
         drop(std::mem::take(&mut *self.filters.write().await));
+        // Terminate active WS subscriptions — chain has been reset
+        self.reset_notify.notify_waiters();
 
         self.fork.reset_fork_client(fork_client_opt);
         let fork_storage = ForkStorage::new(
@@ -1291,6 +1340,9 @@ pub mod testing {
             } else {
                 StorageKeyLayout::Era
             };
+            let (block_tx, _) = broadcast::channel(16);
+            let (log_tx, _) = broadcast::channel(16);
+            let reset_notify = Arc::new(tokio::sync::Notify::new());
             let (node, _, _, _, _, _) = InMemoryNodeInner::init(
                 None,
                 fee_provider,
@@ -1300,6 +1352,9 @@ pub mod testing {
                 system_contracts.clone(),
                 storage_key_layout,
                 false,
+                block_tx,
+                log_tx,
+                reset_notify,
             );
             InnerNodeTester { node }
         }

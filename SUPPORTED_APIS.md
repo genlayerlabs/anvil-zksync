@@ -98,10 +98,10 @@ The `status` options are:
 | `ETH` | `eth_signTypedData_v4` | `NOT IMPLEMENTED` | Returns `Promise<string>: Signature`. As in `eth_sign`, it is a hex encoded 129 byte array starting with `0x`. |
 | `ETH` | `eth_submitHashrate` | `NOT IMPLEMENTED` | Used for submitting mining hashrate |
 | `ETH` | `eth_submitWork` | `NOT IMPLEMENTED` | Used for submitting a proof-of-work solution |
-| `ETH` | `eth_subscribe` | `NOT IMPLEMENTED` | Starts a subscription to a particular event |
+| [`ETH`](#eth-namespace) | [`eth_subscribe`](#eth_subscribe) | `SUPPORTED` | Starts a subscription (newHeads, logs) over WebSocket |
 | [`ETH`](#eth-namespace) | [`eth_syncing`](#eth_syncing) | `SUPPORTED` | Returns an object containing data about the sync status or `false` when not syncing |
 | [`ETH`](#eth-namespace) | [`eth_uninstallFilter`](#`eth_uninstallfilter) | `SUPPORTED` | Uninstalls a filter with given id |
-| `ETH` | `eth_unsubscribe` | `NOT IMPLEMENTED` | Cancel a subscription to a particular event |
+| [`ETH`](#eth-namespace) | [`eth_unsubscribe`](#eth_unsubscribe) | `SUPPORTED` | Cancel a subscription to a particular event |
 | `EVM` | `evm_addAccount` | `NOT IMPLEMENTED` | Adds any arbitrary account |
 | [`EVM`](#evm-namespace) | [`evm_increaseTime`](#evm_increasetime) | `SUPPORTED` | Jump forward in time by the given amount of time, in seconds |
 | [`EVM`](#evm-namespace) | [`evm_mine`](#evm_mine) | `SUPPORTED` | Force a single block to be mined |

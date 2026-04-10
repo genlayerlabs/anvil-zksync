@@ -40,7 +40,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
+use zksync_web3_decl::types::PubSubResult;
 use zksync_contracts::{BaseSystemContracts, BaseSystemContractsHashes};
 use zksync_error::anvil_zksync::node::{
     AnvilNodeError, AnvilNodeResult, generic_error, to_generic,
@@ -303,6 +304,12 @@ pub struct InMemoryNode {
     pub(crate) sealer_state: BlockSealerState,
     pub(crate) system_contracts: SystemContracts,
     pub(crate) storage_key_layout: StorageKeyLayout,
+    /// Broadcast sender for `newHeads` subscriptions (PubSubResult::Header).
+    pub block_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+    /// Broadcast sender for `logs` subscriptions (PubSubResult::Log).
+    pub log_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+    /// Notified on reset/revert to terminate active WS subscriptions.
+    pub reset_notify: Arc<tokio::sync::Notify>,
 }
 
 impl InMemoryNode {
@@ -320,6 +327,9 @@ impl InMemoryNode {
         sealer_state: BlockSealerState,
         system_contracts: SystemContracts,
         storage_key_layout: StorageKeyLayout,
+        block_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+        log_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+        reset_notify: Arc<tokio::sync::Notify>,
     ) -> Self {
         InMemoryNode {
             inner,
@@ -335,6 +345,9 @@ impl InMemoryNode {
             sealer_state,
             system_contracts,
             storage_key_layout,
+            block_subscription_tx,
+            log_subscription_tx,
+            reset_notify,
         }
     }
 
@@ -638,6 +651,9 @@ impl InMemoryNode {
         } else {
             StorageKeyLayout::Era
         };
+        let (block_subscription_tx, _) = broadcast::channel(1024);
+        let (log_subscription_tx, _) = broadcast::channel(1024);
+        let reset_notify = Arc::new(tokio::sync::Notify::new());
         let (inner, storage, blockchain, time, fork, vm_runner) = InMemoryNodeInner::init(
             fork_client_opt,
             fee_provider,
@@ -647,6 +663,9 @@ impl InMemoryNode {
             system_contracts.clone(),
             storage_key_layout,
             false,
+            block_subscription_tx.clone(),
+            log_subscription_tx.clone(),
+            reset_notify.clone(),
         );
         let (node_executor, node_handle) =
             NodeExecutor::new(inner.clone(), vm_runner, storage_key_layout);
@@ -675,6 +694,9 @@ impl InMemoryNode {
             block_sealer_state,
             system_contracts,
             storage_key_layout,
+            block_subscription_tx,
+            log_subscription_tx,
+            reset_notify,
         )
     }
 

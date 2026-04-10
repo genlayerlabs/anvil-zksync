@@ -327,6 +327,9 @@ async fn start_program(opt: Cli) -> Result<(), AnvilZksyncError> {
     };
 
     let is_fork_mode = fork_client.is_some();
+    let (block_subscription_tx, _) = tokio::sync::broadcast::channel(1024);
+    let (log_subscription_tx, _) = tokio::sync::broadcast::channel(1024);
+    let reset_notify = std::sync::Arc::new(tokio::sync::Notify::new());
     let (node_inner, storage, blockchain, time, fork, vm_runner) = InMemoryNodeInner::init(
         fork_client,
         fee_input_provider.clone(),
@@ -337,6 +340,9 @@ async fn start_program(opt: Cli) -> Result<(), AnvilZksyncError> {
         storage_key_layout,
         // Only produce system logs if L1 is enabled
         config.l1_config.is_some(),
+        block_subscription_tx.clone(),
+        log_subscription_tx.clone(),
+        reset_notify.clone(),
     );
 
     let mut node_service_tasks: Vec<Pin<Box<dyn Future<Output = anyhow::Result<()>>>>> = Vec::new();
@@ -404,6 +410,9 @@ async fn start_program(opt: Cli) -> Result<(), AnvilZksyncError> {
         block_sealer_state,
         system_contracts,
         storage_key_layout,
+        block_subscription_tx,
+        log_subscription_tx,
+        reset_notify.clone(),
     );
 
     // We start the node executor now so it can receive and handle commands

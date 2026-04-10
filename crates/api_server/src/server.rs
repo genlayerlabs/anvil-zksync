@@ -1,11 +1,12 @@
 use crate::{
     AnvilNamespace, AnvilZksNamespace, ConfigNamespace, DebugNamespace, EthNamespace,
-    EthTestNamespace, EvmNamespace, NetNamespace, Web3Namespace, ZksNamespace,
+    EthPubSubNamespace, EthSubscriptionIdProvider, EthTestNamespace, EvmNamespace, NetNamespace,
+    Web3Namespace, ZksNamespace,
 };
 use anvil_zksync_api_decl::{
     AnvilNamespaceServer, AnvilZksNamespaceServer, ConfigNamespaceServer, DebugNamespaceServer,
-    EthNamespaceServer, EthTestNamespaceServer, EvmNamespaceServer, NetNamespaceServer,
-    Web3NamespaceServer, ZksNamespaceServer,
+    EthNamespaceServer, EthPubSubServer, EthTestNamespaceServer, EvmNamespaceServer,
+    NetNamespaceServer, Web3NamespaceServer, ZksNamespaceServer,
 };
 use anvil_zksync_core::node::InMemoryNode;
 use anvil_zksync_l1_sidecar::L1Sidecar;
@@ -55,6 +56,12 @@ impl NodeServerBuilder {
             .unwrap();
         rpc.merge(EthTestNamespace::new(node.clone()).into_rpc())
             .unwrap();
+        rpc.merge(EthPubSubNamespace::new(
+            node.block_subscription_tx.clone(),
+            node.log_subscription_tx.clone(),
+            node.reset_notify.clone(),
+        ).into_rpc())
+            .unwrap();
         rpc.merge(AnvilNamespace::new(node.clone()).into_rpc())
             .unwrap();
         rpc.merge(AnvilZksNamespace::new(l1_sidecar.clone()).into_rpc())
@@ -89,15 +96,16 @@ impl NodeServerBuilder {
                 .then(|| ProxyGetRequestLayer::new("/health", "web3_clientVersion").unwrap()),
         );
         let server_builder = ServerBuilder::default()
-            .http_only()
+            .set_id_provider(EthSubscriptionIdProvider)
             .set_http_middleware(
                 tower::ServiceBuilder::new()
                     .layer(cors_layers)
                     .layer(health_api_layer),
             )
-            .set_rpc_middleware(RpcServiceBuilder::new().rpc_logger(100))
             .set_rpc_middleware(
-                RpcServiceBuilder::new().layer_fn(|service| TelemetryReporter { service }),
+                RpcServiceBuilder::new()
+                    .rpc_logger(100)
+                    .layer_fn(|service| TelemetryReporter { service }),
             );
 
         match server_builder.build(addr).await {

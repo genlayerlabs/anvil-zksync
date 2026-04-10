@@ -867,6 +867,7 @@ dependencies = [
  "anvil_zksync_l1_sidecar",
  "anvil_zksync_types",
  "anyhow",
+ "async-trait",
  "function_name",
  "futures 0.3.31",
  "hex",
