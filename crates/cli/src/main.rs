@@ -347,7 +347,7 @@ async fn start_program(opt: Cli) -> Result<(), AnvilZksyncError> {
 
     let mut node_service_tasks: Vec<Pin<Box<dyn Future<Output = anyhow::Result<()>>>>> = Vec::new();
     let (node_executor, node_handle) =
-        NodeExecutor::new(node_inner.clone(), vm_runner, storage_key_layout);
+        NodeExecutor::new(node_inner.clone(), vm_runner, storage_key_layout, Some(pool.clone()));
     let l1_sidecar = match config.l1_config.as_ref() {
         Some(_) if fork_print_info.is_some() => {
             return Err(zksync_error::anvil_zksync::env::InvalidArguments {

@@ -522,16 +522,31 @@ impl InMemoryNodeInner {
         let to = req.to;
         let mut request_with_gas_per_pubdata_overridden = req;
 
-        // If not passed, set request nonce to the expected value
-        if request_with_gas_per_pubdata_overridden.nonce.is_none() {
-            let nonce_key = self.storage_key_layout.get_nonce_key(
-                &request_with_gas_per_pubdata_overridden
-                    .from
-                    .unwrap_or_default(),
-            );
-            let full_nonce = self.fork_storage.read_value_alt(&nonce_key).await?;
-            let (account_nonce, _) = decompose_full_nonce(h256_to_u256(full_nonce));
-            request_with_gas_per_pubdata_overridden.nonce = Some(account_nonce);
+        // If not passed, set request nonce to the expected value.
+        // Also override future-nonce values: callers (e.g. ethers.js) that send a tx with
+        // nonce=N+k while the account is at nonce=N would otherwise fail estimation with
+        // ValueMismatch. Gas usage is independent of nonce, so estimating with the current
+        // on-chain nonce is correct and matches geth/anvil mempool behavior.
+        let nonce_key = self.storage_key_layout.get_nonce_key(
+            &request_with_gas_per_pubdata_overridden
+                .from
+                .unwrap_or_default(),
+        );
+        let full_nonce = self.fork_storage.read_value_alt(&nonce_key).await?;
+        let (account_nonce, _) = decompose_full_nonce(h256_to_u256(full_nonce));
+        match request_with_gas_per_pubdata_overridden.nonce {
+            None => {
+                request_with_gas_per_pubdata_overridden.nonce = Some(account_nonce);
+            }
+            Some(provided) if provided > account_nonce => {
+                tracing::debug!(
+                    %provided,
+                    %account_nonce,
+                    "estimate_gas: overriding future-nonce with current account nonce"
+                );
+                request_with_gas_per_pubdata_overridden.nonce = Some(account_nonce);
+            }
+            _ => {}
         }
 
         if let Some(ref mut eip712_meta) = request_with_gas_per_pubdata_overridden.eip712_meta {

@@ -120,7 +120,16 @@ impl InMemoryNode {
             return Err(err.into());
         };
 
-        self.pool.add_tx(l2_tx.into());
+        // Look up the sender's current account nonce from storage so we can route
+        // future-nonce txs to the pending queue rather than letting the VM reject them.
+        let sender = l2_tx.common_data.initiator_address;
+        let nonce_key = self.storage_key_layout.get_nonce_key(&sender);
+        let full_nonce = self.storage.read_value_alt(&nonce_key).await?;
+        let (account_nonce, _) = decompose_full_nonce(h256_to_u256(full_nonce));
+        let current_nonce = zksync_types::Nonce(account_nonce.as_u32());
+
+        self.pool
+            .add_tx_with_nonce_check(l2_tx.into(), current_nonce);
         Ok(hash)
     }
 

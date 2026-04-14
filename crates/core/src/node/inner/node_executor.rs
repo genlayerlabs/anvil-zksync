@@ -3,22 +3,27 @@ use crate::node::fork::ForkConfig;
 use crate::node::inner::fork::{ForkClient, ForkSource};
 use crate::node::inner::vm_runner::VmRunner;
 use crate::node::keys::StorageKeyLayout;
-use crate::node::pool::TxBatch;
+use crate::node::pool::{TxBatch, TxPool};
 use indicatif::ProgressBar;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use url::Url;
 use zksync_error::anvil_zksync;
 use zksync_error::anvil_zksync::node::{AnvilNodeError, AnvilNodeResult};
+use zksync_multivm::interface::storage::ReadStorage;
 use zksync_types::bytecode::{BytecodeHash, BytecodeMarker, pad_evm_bytecode};
-use zksync_types::utils::nonces_to_full_nonce;
-use zksync_types::{Address, L2BlockNumber, StorageKey, U256, get_code_key, u256_to_h256};
+use zksync_types::utils::{decompose_full_nonce, nonces_to_full_nonce};
+use zksync_types::{Address, L2BlockNumber, Nonce, StorageKey, U256, get_code_key, h256_to_u256, u256_to_h256};
 
 pub struct NodeExecutor {
     node_inner: Arc<RwLock<InMemoryNodeInner>>,
     vm_runner: VmRunner,
     command_receiver: mpsc::Receiver<Command>,
     storage_key_layout: StorageKeyLayout,
+    /// Pool used to promote pending (future-nonce) transactions after a block is sealed.
+    /// `None` for tests that don't exercise the pool path.
+    pool: Option<TxPool>,
 }
 
 impl NodeExecutor {
@@ -26,6 +31,7 @@ impl NodeExecutor {
         node_inner: Arc<RwLock<InMemoryNodeInner>>,
         vm_runner: VmRunner,
         storage_key_layout: StorageKeyLayout,
+        pool: Option<TxPool>,
     ) -> (Self, NodeExecutorHandle) {
         let (command_sender, command_receiver) = mpsc::channel(128);
         let this = Self {
@@ -33,6 +39,7 @@ impl NodeExecutor {
             vm_runner,
             command_receiver,
             storage_key_layout,
+            pool,
         };
         let handle = NodeExecutorHandle { command_sender };
         (this, handle)
@@ -107,13 +114,40 @@ impl NodeExecutor {
         reply_sender: Option<oneshot::Sender<AnvilNodeResult<L2BlockNumber>>>,
     ) -> AnvilNodeResult<()> {
         let mut node_inner = self.node_inner.write().await;
+        let senders: HashSet<Address> = tx_batch
+            .txs
+            .iter()
+            .map(|tx| tx.initiator_account())
+            .collect();
         let tx_batch_execution_result = self
             .vm_runner
             .run_tx_batch(tx_batch, &mut node_inner)
             .await?;
 
         let result = node_inner.seal_block(tx_batch_execution_result).await;
+        // Read post-execution nonces for every sender in the batch, then promote any
+        // pending future-nonce txs whose predecessor was just mined.
+        let promotions = if let Some(pool) = &self.pool {
+            let mut next_nonces: Vec<(Address, Nonce)> = Vec::with_capacity(senders.len());
+            let nonce_key_layout = self.storage_key_layout;
+            // Storage reads via the inner's fork_storage (sync path).
+            for sender in &senders {
+                let nonce_key = nonce_key_layout.get_nonce_key(sender);
+                let mut storage = node_inner.fork_storage.clone();
+                let raw = storage.read_value(&nonce_key);
+                let (account_nonce, _) = decompose_full_nonce(h256_to_u256(raw));
+                next_nonces.push((*sender, Nonce(account_nonce.as_u32())));
+            }
+            Some((pool.clone(), next_nonces))
+        } else {
+            None
+        };
         drop(node_inner);
+        if let Some((pool, next_nonces)) = promotions {
+            for (sender, next_nonce) in next_nonces {
+                pool.promote_pending(sender, next_nonce);
+            }
+        }
         // Reply to sender if we can, otherwise hold result for further processing
         let result = if let Some(reply_sender) = reply_sender {
             if let Err(error_result) = reply_sender.send(result) {
@@ -142,6 +176,8 @@ impl NodeExecutor {
 
         // Save old interval to restore later: it might get replaced with `interval` below
         let old_interval = node_inner.time.get_block_timestamp_interval();
+        let nonce_key_layout = self.storage_key_layout;
+        let mut all_senders: HashSet<Address> = HashSet::new();
         let result = async {
             let mut block_numbers = Vec::with_capacity(tx_batches.len());
             // Processing the entire vector is essentially atomic here because `NodeExecutor` is
@@ -151,6 +187,9 @@ impl NodeExecutor {
                 // use the existing interval).
                 if i == 1 {
                     node_inner.time.set_block_timestamp_interval(Some(interval));
+                }
+                for tx in &tx_batch.txs {
+                    all_senders.insert(tx.initiator_account());
                 }
                 let tx_batch_execution_result = self
                     .vm_runner
@@ -162,8 +201,30 @@ impl NodeExecutor {
             Ok(block_numbers)
         }
         .await;
+        // Promote pending txs after all blocks complete.
+        let promotions: Vec<(Address, Nonce)> = if self.pool.is_some() {
+            all_senders
+                .iter()
+                .map(|sender| {
+                    let nonce_key = nonce_key_layout.get_nonce_key(sender);
+                    let mut storage = node_inner.fork_storage.clone();
+                    let raw = storage.read_value(&nonce_key);
+                    let (account_nonce, _) = decompose_full_nonce(h256_to_u256(raw));
+                    (*sender, Nonce(account_nonce.as_u32()))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         // Restore old interval
         node_inner.time.set_block_timestamp_interval(old_interval);
+        drop(node_inner);
+
+        if let Some(pool) = &self.pool {
+            for (sender, next_nonce) in promotions {
+                pool.promote_pending(sender, next_nonce);
+            }
+        }
 
         // Reply to sender if we can, otherwise hold result for further processing
         let result = if let Err(result) = reply.send(result) {

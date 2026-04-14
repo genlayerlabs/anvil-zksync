@@ -667,12 +667,12 @@ impl InMemoryNode {
             log_subscription_tx.clone(),
             reset_notify.clone(),
         );
-        let (node_executor, node_handle) =
-            NodeExecutor::new(inner.clone(), vm_runner, storage_key_layout);
         let pool = TxPool::new(
             impersonation.clone(),
             anvil_zksync_types::TransactionOrder::Fifo,
         );
+        let (node_executor, node_handle) =
+            NodeExecutor::new(inner.clone(), vm_runner, storage_key_layout, Some(pool.clone()));
         let tx_listener = pool.add_tx_listener();
         let (block_sealer, block_sealer_state) = BlockSealer::new(
             BlockSealerMode::immediate(1000, tx_listener),
