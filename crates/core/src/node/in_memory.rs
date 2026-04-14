@@ -55,7 +55,8 @@ use zksync_multivm::interface::{
     ExecutionResult, InspectExecutionMode, L1BatchEnv, L2BlockEnv, TxExecutionMode, VmInterface,
 };
 use zksync_multivm::tracers::CallTracer;
-use zksync_multivm::utils::{get_batch_base_fee, get_max_batch_gas_limit};
+use zksync_multivm::utils::get_batch_base_fee;
+use zksync_types::MAX_L2_TX_GAS_LIMIT;
 use zksync_multivm::vm_latest::Vm;
 use zksync_types::api::state_override::StateOverride;
 
@@ -211,7 +212,13 @@ pub fn create_block<TX>(
         l1_batch_timestamp: Some(U256::from(batch_env.timestamp)),
         transactions,
         gas_used,
-        gas_limit: U256::from(get_max_batch_gas_limit(VmVersion::latest())),
+        // Report the per-tx gas limit (`MAX_L2_TX_GAS_LIMIT` = 80M) rather than the
+        // VM batch gas limit (~2^50). Tooling like `epochAdvanceEpoch2.ts` reads
+        // `block.gasLimit` and uses it as a per-tx gas cap, which would exceed the
+        // VM's actual per-tx limit and trigger an account-validation halt. Using
+        // the per-tx limit matches what real EVM chains report and what L2 clients
+        // expect.
+        gas_limit: U256::from(MAX_L2_TX_GAS_LIMIT),
         logs_bloom,
         author: Address::default(), // Matches core's behavior, irrelevant for ZKsync
         state_root: H256::default(), // Intentionally empty as blocks in ZKsync don't have state - batches do
