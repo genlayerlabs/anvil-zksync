@@ -38,6 +38,7 @@ impl InMemoryNode {
     pub async fn call_impl(
         &self,
         req: zksync_types::transaction_request::CallRequest,
+        block: Option<zksync_types::api::BlockIdVariant>,
         state_override: Option<StateOverride>,
     ) -> Result<Bytes, Web3Error> {
         let system_contracts = self.system_contracts.contracts_for_l2_call().clone();
@@ -63,7 +64,7 @@ impl InMemoryNode {
             tx.common_data.fee.gas_limit = ETH_CALL_GAS_LIMIT.into();
         }
         let call_result = self
-            .run_l2_call(tx.clone(), system_contracts, state_override)
+            .run_l2_call(tx.clone(), system_contracts, block, state_override)
             .await
             .context("Invalid data due to invalid name")?;
 

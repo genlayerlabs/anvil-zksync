@@ -1298,6 +1298,69 @@ impl InMemoryNodeInner {
         Box::new(&self.fork_storage)
     }
 
+    /// Returns a storage view at a specific historical block number.
+    /// Falls back to current storage if the block is current or not found.
+    /// Uses a hybrid approach: user contract state comes from the historical snapshot,
+    /// while system contract state (SYSTEM_CONTEXT, bootloader, etc.) comes from current
+    /// storage to keep the VM's block-level assertions consistent.
+    ///
+    /// NOTE: For forked networks, the returned snapshot is a flat `InMemoryStorage` and
+    /// cannot reach back to the upstream fork for keys that were never written locally.
+    /// Callers that need the fork fallback should prefer the current `ForkStorage` (used
+    /// in the None / not-found branches). This is a known limitation for the local-only
+    /// use case anvil-zksync is primarily aimed at.
+    pub async fn read_storage_at_block(&self, block: Option<api::BlockIdVariant>) -> Result<Box<dyn ReadStorage>, Web3Error> {
+        let block = match block {
+            Some(b) => b,
+            None => return Ok(Box::new(self.fork_storage.clone())),
+        };
+
+        let storage = self.blockchain.read().await;
+        let block_number = match block {
+            BlockIdVariant::BlockNumber(bn) => {
+                utils::to_real_block_number(bn, U64::from(storage.current_block.0))
+            }
+            BlockIdVariant::BlockNumberObject(o) => {
+                utils::to_real_block_number(o.block_number, U64::from(storage.current_block.0))
+            }
+            BlockIdVariant::BlockHashObject(o) => {
+                match storage.blocks.get(&o.block_hash).map(|b| b.number) {
+                    Some(n) => n,
+                    None => return Ok(Box::new(self.fork_storage.clone())),
+                }
+            }
+        };
+        let block_number = L2BlockNumber(block_number.as_u32());
+
+        if block_number == storage.current_block {
+            return Ok(Box::new(self.fork_storage.clone()));
+        }
+
+        let block_hash = match storage.hashes.get(&block_number) {
+            Some(h) => *h,
+            None => return Ok(Box::new(self.fork_storage.clone())),
+        };
+
+        let historical_state = self
+            .previous_states
+            .get(&block_hash)
+            .ok_or_else(|| Web3Error::PrunedBlock(block_number))?;
+
+        let current_raw = &self.fork_storage.inner.read().unwrap().raw_storage;
+        let mut historical = current_raw.clone();
+        historical.state = historical_state.clone();
+
+        // Restore system context keys from current state so the VM's block-level
+        // assertions (prev_block.number + 1 == next_block.number, etc.) stay consistent.
+        for (key, value) in current_raw.state.iter() {
+            if *key.address() == zksync_types::SYSTEM_CONTEXT_ADDRESS {
+                historical.state.insert(*key, *value);
+            }
+        }
+
+        Ok(Box::new(historical))
+    }
+
     // TODO: Remove, this should also be made available from somewhere else
     pub fn chain_id(&self) -> L2ChainId {
         self.fork_storage.chain_id

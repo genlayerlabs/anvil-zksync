@@ -413,6 +413,7 @@ impl InMemoryNode {
         &self,
         mut l2_tx: L2Tx,
         base_contracts: BaseSystemContracts,
+        block: Option<zksync_types::api::BlockIdVariant>,
         state_override: Option<StateOverride>,
     ) -> AnvilNodeResult<ExecutionResult> {
         let execution_mode = TxExecutionMode::EthCall;
@@ -424,11 +425,27 @@ impl InMemoryNode {
         let (batch_env, _) = inner.create_l1_batch_env().await;
         let system_env = inner.create_system_env(base_contracts, execution_mode);
 
+        // NOTE: if `read_storage_at_block` errors (e.g. PrunedBlock for a block older
+        // than MAX_PREVIOUS_STATES snapshots), we silently fall back to the current
+        // fork storage. Propagating the error is arguably more correct, but the retry
+        // loops in our test harness + downstream consumers interpret the error as a
+        // transient failure and retry forever, turning a missing-archive into a hang.
+        // Logging the fallback lets us see when this happens without breaking callers.
+        let base_storage: Box<dyn ReadStorage> = match inner.read_storage_at_block(block).await {
+            Ok(storage) => storage,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "read_storage_at_block failed; falling back to current storage"
+                );
+                Box::new(inner.fork_storage.clone())
+            }
+        };
+
         let storage_override = if let Some(state_override) = state_override {
-            apply_state_override(inner.read_storage(), state_override)
+            apply_state_override(base_storage, state_override)
         } else {
-            // Do not spawn a new thread in the most frequent case.
-            StorageWithOverrides::new(inner.read_storage())
+            StorageWithOverrides::new(base_storage)
         };
 
         let storage = StorageView::new(storage_override).to_rc_ptr();
