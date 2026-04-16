@@ -85,7 +85,13 @@ pub const MAX_TX_SIZE: usize = 1_200_000;
 /// Acceptable gas overestimation limit.
 pub const ESTIMATE_GAS_ACCEPTABLE_OVERESTIMATION: u64 = 1_000;
 /// The maximum number of previous blocks to store the state for.
-pub const MAX_PREVIOUS_STATES: u16 = 128;
+///
+/// Increasing this lets historical `eth_call` resolve further back in the
+/// chain, at the cost of memory (each snapshot is a full clone of the
+/// storage HashMap). 1024 is ~8× the previous default and comfortably
+/// covers multi-minute test runs that deploy, mutate, then query at the
+/// deploy block. Proper upstream fix: make this a CLI/config option.
+pub const MAX_PREVIOUS_STATES: u16 = 1024;
 /// The zks protocol version.
 pub const PROTOCOL_VERSION: &str = "zks/1";
 
