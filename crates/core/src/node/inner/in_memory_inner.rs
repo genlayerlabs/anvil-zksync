@@ -223,6 +223,89 @@ impl InMemoryNodeInner {
         (batch_env, block_ctx)
     }
 
+    /// Resolve an optional [api::BlockIdVariant] to an [L2BlockNumber], returning
+    /// `None` when the block is the current head (caller should fall back to
+    /// latest) or when the block cannot be resolved.
+    pub async fn resolve_historical_block(
+        &self,
+        block: Option<api::BlockIdVariant>,
+    ) -> Option<L2BlockNumber> {
+        let block = block?;
+        let storage = self.blockchain.read().await;
+        let current = storage.current_block;
+        let number_u64 = match block {
+            BlockIdVariant::BlockNumber(bn) => {
+                utils::to_real_block_number(bn, U64::from(current.0))
+            }
+            BlockIdVariant::BlockNumberObject(o) => {
+                utils::to_real_block_number(o.block_number, U64::from(current.0))
+            }
+            BlockIdVariant::BlockHashObject(o) => {
+                storage.blocks.get(&o.block_hash).map(|b| b.number)?
+            }
+        };
+        let resolved = L2BlockNumber(number_u64.as_u32());
+        if resolved == current {
+            None
+        } else {
+            Some(resolved)
+        }
+    }
+
+    /// Create an [L1BatchEnv] that represents executing a call as if we were
+    /// right after the given historical block, so `block.number` and
+    /// `block.timestamp` inside the VM see the historical values rather than
+    /// latest. Used for historical `eth_call`.
+    pub async fn create_l1_batch_env_at_block(
+        &self,
+        block_number: L2BlockNumber,
+    ) -> Option<(L1BatchEnv, BlockContext)> {
+        let storage = self.blockchain.read().await;
+        let block_hash = storage.hashes.get(&block_number).copied()?;
+        let block = storage.blocks.get(&block_hash)?;
+
+        let historical_timestamp = block.timestamp.as_u64();
+        let historical_batch = block.l1_batch_number.unwrap_or_default().as_u32();
+        let historical_miniblock = block.number.as_u32();
+
+        let block_ctx = BlockContext {
+            hash: H256::zero(),
+            batch: (historical_batch + 1) as u32,
+            miniblock: (historical_miniblock as u64) + 1,
+            // Add 1s so the monotonic-timestamp assertions in the VM pass.
+            timestamp: historical_timestamp + 1,
+            prev_block_hash: block_hash,
+        };
+
+        let fee_input = if let Some(fork_details) = self.fork.details() {
+            BatchFeeInput::PubdataIndependent(PubdataIndependentBatchFeeModelInput {
+                l1_gas_price: fork_details.l1_gas_price,
+                fair_l2_gas_price: fork_details.l2_fair_gas_price,
+                fair_pubdata_price: fork_details.fair_pubdata_price,
+            })
+        } else {
+            self.fee_input_provider.get_batch_fee_input()
+        };
+
+        let batch_env = L1BatchEnv {
+            previous_batch_hash: None,
+            number: L1BatchNumber::from(block_ctx.batch),
+            timestamp: block_ctx.timestamp,
+            fee_input,
+            fee_account: H160::zero(),
+            enforced_base_fee: None,
+            first_l2_block: L2BlockEnv {
+                number: block_ctx.miniblock as u32,
+                timestamp: block_ctx.timestamp,
+                prev_block_hash: block_ctx.prev_block_hash,
+                max_virtual_blocks_to_create: 1,
+                interop_roots: vec![],
+            },
+        };
+
+        Some((batch_env, block_ctx))
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn apply_batch(
         &mut self,

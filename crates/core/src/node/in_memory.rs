@@ -428,7 +428,21 @@ impl InMemoryNode {
 
         // init vm
 
-        let (batch_env, _) = inner.create_l1_batch_env().await;
+        // Build the batch env from the requested block when the caller pins a
+        // historical block, so `block.number` / `block.timestamp` etc. inside
+        // the VM reflect that block rather than latest head. Latest / None
+        // falls through to the normal "next block on current head" path.
+        let historical_block_number = inner.resolve_historical_block(block).await;
+        let (batch_env, _) = match historical_block_number {
+            Some(n) => match inner.create_l1_batch_env_at_block(n).await {
+                Some(env) => env,
+                None => {
+                    tracing::warn!(block = ?n, "no batch env for historical block; falling back to latest");
+                    inner.create_l1_batch_env().await
+                }
+            },
+            None => inner.create_l1_batch_env().await,
+        };
         let system_env = inner.create_system_env(base_contracts, execution_mode);
 
         // NOTE: if `read_storage_at_block` errors (e.g. PrunedBlock for a block older
