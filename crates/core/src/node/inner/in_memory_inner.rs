@@ -36,7 +36,8 @@ use once_cell::sync::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
+use zksync_web3_decl::types::PubSubResult;
 use zksync_contracts::{BaseSystemContracts, BaseSystemContractsHashes};
 use zksync_error::anvil_zksync::gas_estim;
 use zksync_error::anvil_zksync::node::{
@@ -99,6 +100,12 @@ pub struct InMemoryNodeInner {
     /// Keeps track of historical states indexed via block hash. Limited to [MAX_PREVIOUS_STATES].
     previous_states: IndexMap<H256, HashMap<StorageKey, StorageValue>>,
     storage_key_layout: StorageKeyLayout,
+    /// Broadcast sender for `newHeads` WS subscriptions.
+    pub block_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+    /// Broadcast sender for `logs` WS subscriptions.
+    pub log_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+    /// Notified on reset/revert to terminate active WS subscriptions.
+    pub reset_notify: Arc<tokio::sync::Notify>,
 }
 
 impl InMemoryNodeInner {
@@ -115,6 +122,9 @@ impl InMemoryNodeInner {
         impersonation: ImpersonationManager,
         system_contracts: SystemContracts,
         storage_key_layout: StorageKeyLayout,
+        block_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+        log_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+        reset_notify: Arc<tokio::sync::Notify>,
     ) -> Self {
         InMemoryNodeInner {
             blockchain,
@@ -129,6 +139,9 @@ impl InMemoryNodeInner {
             rich_accounts: HashSet::new(),
             previous_states: Default::default(),
             storage_key_layout,
+            block_subscription_tx,
+            log_subscription_tx,
+            reset_notify,
         }
     }
 
@@ -208,6 +221,89 @@ impl InMemoryNodeInner {
         };
 
         (batch_env, block_ctx)
+    }
+
+    /// Resolve an optional [api::BlockIdVariant] to an [L2BlockNumber], returning
+    /// `None` when the block is the current head (caller should fall back to
+    /// latest) or when the block cannot be resolved.
+    pub async fn resolve_historical_block(
+        &self,
+        block: Option<api::BlockIdVariant>,
+    ) -> Option<L2BlockNumber> {
+        let block = block?;
+        let storage = self.blockchain.read().await;
+        let current = storage.current_block;
+        let number_u64 = match block {
+            BlockIdVariant::BlockNumber(bn) => {
+                utils::to_real_block_number(bn, U64::from(current.0))
+            }
+            BlockIdVariant::BlockNumberObject(o) => {
+                utils::to_real_block_number(o.block_number, U64::from(current.0))
+            }
+            BlockIdVariant::BlockHashObject(o) => {
+                storage.blocks.get(&o.block_hash).map(|b| b.number)?
+            }
+        };
+        let resolved = L2BlockNumber(number_u64.as_u32());
+        if resolved == current {
+            None
+        } else {
+            Some(resolved)
+        }
+    }
+
+    /// Create an [L1BatchEnv] that represents executing a call as if we were
+    /// right after the given historical block, so `block.number` and
+    /// `block.timestamp` inside the VM see the historical values rather than
+    /// latest. Used for historical `eth_call`.
+    pub async fn create_l1_batch_env_at_block(
+        &self,
+        block_number: L2BlockNumber,
+    ) -> Option<(L1BatchEnv, BlockContext)> {
+        let storage = self.blockchain.read().await;
+        let block_hash = storage.hashes.get(&block_number).copied()?;
+        let block = storage.blocks.get(&block_hash)?;
+
+        let historical_timestamp = block.timestamp.as_u64();
+        let historical_batch = block.l1_batch_number.unwrap_or_default().as_u32();
+        let historical_miniblock = block.number.as_u32();
+
+        let block_ctx = BlockContext {
+            hash: H256::zero(),
+            batch: (historical_batch + 1) as u32,
+            miniblock: (historical_miniblock as u64) + 1,
+            // Add 1s so the monotonic-timestamp assertions in the VM pass.
+            timestamp: historical_timestamp + 1,
+            prev_block_hash: block_hash,
+        };
+
+        let fee_input = if let Some(fork_details) = self.fork.details() {
+            BatchFeeInput::PubdataIndependent(PubdataIndependentBatchFeeModelInput {
+                l1_gas_price: fork_details.l1_gas_price,
+                fair_l2_gas_price: fork_details.l2_fair_gas_price,
+                fair_pubdata_price: fork_details.fair_pubdata_price,
+            })
+        } else {
+            self.fee_input_provider.get_batch_fee_input()
+        };
+
+        let batch_env = L1BatchEnv {
+            previous_batch_hash: None,
+            number: L1BatchNumber::from(block_ctx.batch),
+            timestamp: block_ctx.timestamp,
+            fee_input,
+            fee_account: H160::zero(),
+            enforced_base_fee: None,
+            first_l2_block: L2BlockEnv {
+                number: block_ctx.miniblock as u32,
+                timestamp: block_ctx.timestamp,
+                prev_block_hash: block_ctx.prev_block_hash,
+                max_virtual_blocks_to_create: 1,
+                interop_roots: vec![],
+            },
+        };
+
+        Some((batch_env, block_ctx))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -363,6 +459,8 @@ impl InMemoryNodeInner {
             filters.notify_new_pending_transaction(tx_result.receipt.transaction_hash);
             for log in &tx_result.receipt.logs {
                 filters.notify_new_log(log, block_ctxs[0].miniblock.into());
+                // Push to WS log subscribers
+                let _ = self.log_subscription_tx.send(Arc::new(PubSubResult::Log(log.clone())));
             }
         }
         drop(filters);
@@ -460,6 +558,36 @@ impl InMemoryNodeInner {
         }
         drop(filters);
 
+        // Push block headers to WS subscribers.
+        // Retrieve the sealed block to build a full BlockHeader.
+        let blockchain = self.blockchain.read().await;
+        for block_ctx in &block_ctxs {
+            if let Some(sealed_block) = blockchain.blocks.get(&block_ctx.hash) {
+                use zksync_types::web3::BlockHeader;
+                let header = BlockHeader {
+                    hash: Some(sealed_block.hash),
+                    parent_hash: sealed_block.parent_hash,
+                    uncles_hash: sealed_block.uncles_hash,
+                    author: sealed_block.author,
+                    state_root: sealed_block.state_root,
+                    transactions_root: sealed_block.transactions_root,
+                    receipts_root: sealed_block.receipts_root,
+                    number: Some(sealed_block.number),
+                    gas_used: sealed_block.gas_used,
+                    gas_limit: sealed_block.gas_limit,
+                    base_fee_per_gas: Some(sealed_block.base_fee_per_gas),
+                    extra_data: sealed_block.extra_data.clone(),
+                    logs_bloom: sealed_block.logs_bloom,
+                    timestamp: sealed_block.timestamp,
+                    difficulty: sealed_block.difficulty,
+                    mix_hash: Some(sealed_block.mix_hash),
+                    nonce: Some(sealed_block.nonce),
+                };
+                let _ = self.block_subscription_tx.send(Arc::new(PubSubResult::Header(header)));
+            }
+        }
+        drop(blockchain);
+
         Ok(L2BlockNumber(block_ctxs[0].miniblock as u32))
     }
 
@@ -477,16 +605,31 @@ impl InMemoryNodeInner {
         let to = req.to;
         let mut request_with_gas_per_pubdata_overridden = req;
 
-        // If not passed, set request nonce to the expected value
-        if request_with_gas_per_pubdata_overridden.nonce.is_none() {
-            let nonce_key = self.storage_key_layout.get_nonce_key(
-                &request_with_gas_per_pubdata_overridden
-                    .from
-                    .unwrap_or_default(),
-            );
-            let full_nonce = self.fork_storage.read_value_alt(&nonce_key).await?;
-            let (account_nonce, _) = decompose_full_nonce(h256_to_u256(full_nonce));
-            request_with_gas_per_pubdata_overridden.nonce = Some(account_nonce);
+        // If not passed, set request nonce to the expected value.
+        // Also override future-nonce values: callers (e.g. ethers.js) that send a tx with
+        // nonce=N+k while the account is at nonce=N would otherwise fail estimation with
+        // ValueMismatch. Gas usage is independent of nonce, so estimating with the current
+        // on-chain nonce is correct and matches geth/anvil mempool behavior.
+        let nonce_key = self.storage_key_layout.get_nonce_key(
+            &request_with_gas_per_pubdata_overridden
+                .from
+                .unwrap_or_default(),
+        );
+        let full_nonce = self.fork_storage.read_value_alt(&nonce_key).await?;
+        let (account_nonce, _) = decompose_full_nonce(h256_to_u256(full_nonce));
+        match request_with_gas_per_pubdata_overridden.nonce {
+            None => {
+                request_with_gas_per_pubdata_overridden.nonce = Some(account_nonce);
+            }
+            Some(provided) if provided > account_nonce => {
+                tracing::debug!(
+                    %provided,
+                    %account_nonce,
+                    "estimate_gas: overriding future-nonce with current account nonce"
+                );
+                request_with_gas_per_pubdata_overridden.nonce = Some(account_nonce);
+            }
+            _ => {}
         }
 
         if let Some(ref mut eip712_meta) = request_with_gas_per_pubdata_overridden.eip712_meta {
@@ -1013,6 +1156,8 @@ impl InMemoryNodeInner {
         // FIXME: This logic is incorrect but it doesn't matter as filters should not be a part of
         //        snapshots anyway
         self.filters = Arc::new(RwLock::new(snapshot.filters));
+        // Terminate active WS subscriptions — chain state has changed
+        self.reset_notify.notify_waiters();
         self.impersonation.set_state(snapshot.impersonation_state);
         self.rich_accounts = snapshot.rich_accounts;
         self.previous_states = snapshot.previous_states;
@@ -1168,6 +1313,8 @@ impl InMemoryNodeInner {
         );
 
         drop(std::mem::take(&mut *self.filters.write().await));
+        // Terminate active WS subscriptions — chain has been reset
+        self.reset_notify.notify_waiters();
 
         self.fork.reset_fork_client(fork_client_opt);
         let fork_storage = ForkStorage::new(
@@ -1234,6 +1381,69 @@ impl InMemoryNodeInner {
         Box::new(&self.fork_storage)
     }
 
+    /// Returns a storage view at a specific historical block number.
+    /// Falls back to current storage if the block is current or not found.
+    /// Uses a hybrid approach: user contract state comes from the historical snapshot,
+    /// while system contract state (SYSTEM_CONTEXT, bootloader, etc.) comes from current
+    /// storage to keep the VM's block-level assertions consistent.
+    ///
+    /// NOTE: For forked networks, the returned snapshot is a flat `InMemoryStorage` and
+    /// cannot reach back to the upstream fork for keys that were never written locally.
+    /// Callers that need the fork fallback should prefer the current `ForkStorage` (used
+    /// in the None / not-found branches). This is a known limitation for the local-only
+    /// use case anvil-zksync is primarily aimed at.
+    pub async fn read_storage_at_block(&self, block: Option<api::BlockIdVariant>) -> Result<Box<dyn ReadStorage>, Web3Error> {
+        let block = match block {
+            Some(b) => b,
+            None => return Ok(Box::new(self.fork_storage.clone())),
+        };
+
+        let storage = self.blockchain.read().await;
+        let block_number = match block {
+            BlockIdVariant::BlockNumber(bn) => {
+                utils::to_real_block_number(bn, U64::from(storage.current_block.0))
+            }
+            BlockIdVariant::BlockNumberObject(o) => {
+                utils::to_real_block_number(o.block_number, U64::from(storage.current_block.0))
+            }
+            BlockIdVariant::BlockHashObject(o) => {
+                match storage.blocks.get(&o.block_hash).map(|b| b.number) {
+                    Some(n) => n,
+                    None => return Ok(Box::new(self.fork_storage.clone())),
+                }
+            }
+        };
+        let block_number = L2BlockNumber(block_number.as_u32());
+
+        if block_number == storage.current_block {
+            return Ok(Box::new(self.fork_storage.clone()));
+        }
+
+        let block_hash = match storage.hashes.get(&block_number) {
+            Some(h) => *h,
+            None => return Ok(Box::new(self.fork_storage.clone())),
+        };
+
+        let historical_state = self
+            .previous_states
+            .get(&block_hash)
+            .ok_or_else(|| Web3Error::PrunedBlock(block_number))?;
+
+        let current_raw = &self.fork_storage.inner.read().unwrap().raw_storage;
+        let mut historical = current_raw.clone();
+        historical.state = historical_state.clone();
+
+        // Restore system context keys from current state so the VM's block-level
+        // assertions (prev_block.number + 1 == next_block.number, etc.) stay consistent.
+        for (key, value) in current_raw.state.iter() {
+            if *key.address() == zksync_types::SYSTEM_CONTEXT_ADDRESS {
+                historical.state.insert(*key, *value);
+            }
+        }
+
+        Ok(Box::new(historical))
+    }
+
     // TODO: Remove, this should also be made available from somewhere else
     pub fn chain_id(&self) -> L2ChainId {
         self.fork_storage.chain_id
@@ -1291,6 +1501,9 @@ pub mod testing {
             } else {
                 StorageKeyLayout::Era
             };
+            let (block_tx, _) = broadcast::channel(16);
+            let (log_tx, _) = broadcast::channel(16);
+            let reset_notify = Arc::new(tokio::sync::Notify::new());
             let (node, _, _, _, _, _) = InMemoryNodeInner::init(
                 None,
                 fee_provider,
@@ -1300,6 +1513,9 @@ pub mod testing {
                 system_contracts.clone(),
                 storage_key_layout,
                 false,
+                block_tx,
+                log_tx,
+                reset_notify,
             );
             InnerNodeTester { node }
         }

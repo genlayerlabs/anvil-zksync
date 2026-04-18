@@ -35,7 +35,8 @@ use fork::{Fork, ForkClient, ForkSource};
 use fork_storage::ForkStorage;
 use std::sync::Arc;
 use time::{ReadTime, Time};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
+use zksync_web3_decl::types::PubSubResult;
 
 impl InMemoryNodeInner {
     // TODO: Bake in Arc<RwLock<_>> into the struct itself
@@ -50,6 +51,9 @@ impl InMemoryNodeInner {
         system_contracts: SystemContracts,
         storage_key_layout: StorageKeyLayout,
         generate_system_logs: bool,
+        block_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+        log_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+        reset_notify: Arc<tokio::sync::Notify>,
     ) -> (
         Arc<RwLock<Self>>,
         Box<dyn ReadStorageDyn>,
@@ -102,6 +106,9 @@ impl InMemoryNodeInner {
             impersonation.clone(),
             system_contracts.clone(),
             storage_key_layout,
+            block_subscription_tx,
+            log_subscription_tx,
+            reset_notify,
         );
 
         (

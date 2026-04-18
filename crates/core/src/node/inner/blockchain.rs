@@ -401,10 +401,6 @@ impl ReadBlockchain for Blockchain {
                 .common_data
                 .extract_chain_id()
                 .context("tx has malformed chain id")?;
-            let input_data = l2_tx
-                .common_data
-                .input
-                .context("tx is missing input data")?;
             anyhow::Ok(api::Transaction {
                 hash: *tx_hash,
                 nonce: U256::from(l2_tx.common_data.nonce.0),
@@ -417,7 +413,7 @@ impl ReadBlockchain for Blockchain {
                 value: info.tx.execute.value,
                 gas_price: Some(U256::from(0)),
                 gas: Default::default(),
-                input: input_data.data.into(),
+                input: l2_tx.execute.calldata.clone().into(),
                 v: Some(chain_id.into()),
                 r: Some(U256::zero()), // TODO: Shouldn't we set the signature?
                 s: Some(U256::zero()), // TODO: Shouldn't we set the signature?

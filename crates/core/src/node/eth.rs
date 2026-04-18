@@ -38,6 +38,7 @@ impl InMemoryNode {
     pub async fn call_impl(
         &self,
         req: zksync_types::transaction_request::CallRequest,
+        block: Option<zksync_types::api::BlockIdVariant>,
         state_override: Option<StateOverride>,
     ) -> Result<Bytes, Web3Error> {
         let system_contracts = self.system_contracts.contracts_for_l2_call().clone();
@@ -63,7 +64,7 @@ impl InMemoryNode {
             tx.common_data.fee.gas_limit = ETH_CALL_GAS_LIMIT.into();
         }
         let call_result = self
-            .run_l2_call(tx.clone(), system_contracts, state_override)
+            .run_l2_call(tx.clone(), system_contracts, block, state_override)
             .await
             .context("Invalid data due to invalid name")?;
 
@@ -120,7 +121,16 @@ impl InMemoryNode {
             return Err(err.into());
         };
 
-        self.pool.add_tx(l2_tx.into());
+        // Look up the sender's current account nonce from storage so we can route
+        // future-nonce txs to the pending queue rather than letting the VM reject them.
+        let sender = l2_tx.common_data.initiator_address;
+        let nonce_key = self.storage_key_layout.get_nonce_key(&sender);
+        let full_nonce = self.storage.read_value_alt(&nonce_key).await?;
+        let (account_nonce, _) = decompose_full_nonce(h256_to_u256(full_nonce));
+        let current_nonce = zksync_types::Nonce(account_nonce.as_u32());
+
+        self.pool
+            .add_tx_with_nonce_check(l2_tx.into(), current_nonce);
         Ok(hash)
     }
 

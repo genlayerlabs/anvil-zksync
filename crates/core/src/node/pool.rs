@@ -2,13 +2,16 @@ use crate::node::impersonate::ImpersonationManager;
 use anvil_zksync_types::{TransactionOrder, TransactionPriority};
 use futures::channel::mpsc::{Receiver, Sender, channel};
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
-use zksync_types::{H256, Transaction};
+use zksync_types::{Address, H256, Nonce, Transaction};
 
 #[derive(Debug, Clone)]
 pub struct TxPool {
     inner: Arc<RwLock<BTreeSet<PoolTransaction>>>,
+    /// Transactions waiting for their predecessor nonce to be mined.
+    /// Keyed by sender address, then by nonce.
+    pending: Arc<RwLock<HashMap<Address, BTreeMap<Nonce, Transaction>>>>,
     /// Transaction ordering in the mempool.
     transaction_order: Arc<RwLock<TransactionOrder>>,
     /// Used to preserve transactions submission order in the pool
@@ -22,6 +25,7 @@ impl TxPool {
     pub fn new(impersonation: ImpersonationManager, transaction_order: TransactionOrder) -> Self {
         Self {
             inner: Arc::new(RwLock::new(BTreeSet::new())),
+            pending: Arc::new(RwLock::new(HashMap::new())),
             submission_number: Arc::new(Mutex::new(0)),
             tx_listeners: Arc::new(Mutex::new(Vec::new())),
             impersonation,
@@ -72,6 +76,71 @@ impl TxPool {
             });
             self.notify_listeners(hash);
         }
+    }
+
+    /// Adds a transaction routing it based on its nonce relative to the sender's current nonce.
+    ///
+    /// Behavior:
+    /// * If `tx.nonce <= current_nonce`: added to the active pool (the VM will reject replays).
+    /// * If `tx.nonce == current_nonce` (the next expected nonce): added to active pool, then
+    ///   any contiguous future-nonce txs from the same sender are promoted from pending.
+    /// * If `tx.nonce > current_nonce`: queued in `pending` until its predecessor is mined.
+    ///
+    /// Returns `true` if the tx is in the active pool, `false` if queued as pending.
+    pub fn add_tx_with_nonce_check(&self, tx: Transaction, current_nonce: Nonce) -> bool {
+        let tx_nonce = tx.nonce().expect("L2 tx without nonce");
+        let sender = tx.initiator_account();
+
+        if tx_nonce <= current_nonce {
+            self.add_tx(tx);
+            // Promote any contiguous pending txs that follow the next expected nonce.
+            self.promote_pending(sender, Nonce(current_nonce.0 + 1));
+            true
+        } else {
+            tracing::debug!(
+                ?sender,
+                tx_nonce = tx_nonce.0,
+                current_nonce = current_nonce.0,
+                "queueing future-nonce tx"
+            );
+            let mut pending = self.pending.write().expect("TxPool pending lock is poisoned");
+            pending.entry(sender).or_default().insert(tx_nonce, tx);
+            false
+        }
+    }
+
+    /// Promotes pending transactions for `sender` whose nonces form a contiguous chain
+    /// starting at `next_nonce`. Called after a block seals.
+    pub fn promote_pending(&self, sender: Address, next_nonce: Nonce) {
+        let mut pending = self.pending.write().expect("TxPool pending lock is poisoned");
+        let Some(account_pending) = pending.get_mut(&sender) else {
+            return;
+        };
+        let mut next = next_nonce;
+        let mut promoted = Vec::new();
+        while let Some(tx) = account_pending.remove(&next) {
+            promoted.push(tx);
+            next = Nonce(next.0 + 1);
+        }
+        if account_pending.is_empty() {
+            pending.remove(&sender);
+        }
+        drop(pending);
+
+        for tx in promoted {
+            tracing::debug!(?sender, nonce = tx.nonce().map(|n| n.0), "promoting pending tx");
+            self.add_tx(tx);
+        }
+    }
+
+    /// Returns the number of pending (future-nonce) transactions across all senders.
+    pub fn pending_count(&self) -> usize {
+        self.pending
+            .read()
+            .expect("TxPool pending lock is poisoned")
+            .values()
+            .map(|m| m.len())
+            .sum()
     }
 
     /// Removes a single transaction from the pool

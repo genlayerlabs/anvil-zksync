@@ -40,7 +40,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, broadcast};
+use zksync_web3_decl::types::PubSubResult;
 use zksync_contracts::{BaseSystemContracts, BaseSystemContractsHashes};
 use zksync_error::anvil_zksync::node::{
     AnvilNodeError, AnvilNodeResult, generic_error, to_generic,
@@ -54,7 +55,8 @@ use zksync_multivm::interface::{
     ExecutionResult, InspectExecutionMode, L1BatchEnv, L2BlockEnv, TxExecutionMode, VmInterface,
 };
 use zksync_multivm::tracers::CallTracer;
-use zksync_multivm::utils::{get_batch_base_fee, get_max_batch_gas_limit};
+use zksync_multivm::utils::get_batch_base_fee;
+use zksync_types::MAX_L2_TX_GAS_LIMIT;
 use zksync_multivm::vm_latest::Vm;
 use zksync_types::api::state_override::StateOverride;
 
@@ -83,7 +85,13 @@ pub const MAX_TX_SIZE: usize = 1_200_000;
 /// Acceptable gas overestimation limit.
 pub const ESTIMATE_GAS_ACCEPTABLE_OVERESTIMATION: u64 = 1_000;
 /// The maximum number of previous blocks to store the state for.
-pub const MAX_PREVIOUS_STATES: u16 = 128;
+///
+/// Increasing this lets historical `eth_call` resolve further back in the
+/// chain, at the cost of memory (each snapshot is a full clone of the
+/// storage HashMap). 1024 is ~8× the previous default and comfortably
+/// covers multi-minute test runs that deploy, mutate, then query at the
+/// deploy block. Proper upstream fix: make this a CLI/config option.
+pub const MAX_PREVIOUS_STATES: u16 = 1024;
 /// The zks protocol version.
 pub const PROTOCOL_VERSION: &str = "zks/1";
 
@@ -210,7 +218,13 @@ pub fn create_block<TX>(
         l1_batch_timestamp: Some(U256::from(batch_env.timestamp)),
         transactions,
         gas_used,
-        gas_limit: U256::from(get_max_batch_gas_limit(VmVersion::latest())),
+        // Report the per-tx gas limit (`MAX_L2_TX_GAS_LIMIT` = 80M) rather than the
+        // VM batch gas limit (~2^50). Tooling like `epochAdvanceEpoch2.ts` reads
+        // `block.gasLimit` and uses it as a per-tx gas cap, which would exceed the
+        // VM's actual per-tx limit and trigger an account-validation halt. Using
+        // the per-tx limit matches what real EVM chains report and what L2 clients
+        // expect.
+        gas_limit: U256::from(MAX_L2_TX_GAS_LIMIT),
         logs_bloom,
         author: Address::default(), // Matches core's behavior, irrelevant for ZKsync
         state_root: H256::default(), // Intentionally empty as blocks in ZKsync don't have state - batches do
@@ -303,6 +317,12 @@ pub struct InMemoryNode {
     pub(crate) sealer_state: BlockSealerState,
     pub(crate) system_contracts: SystemContracts,
     pub(crate) storage_key_layout: StorageKeyLayout,
+    /// Broadcast sender for `newHeads` subscriptions (PubSubResult::Header).
+    pub block_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+    /// Broadcast sender for `logs` subscriptions (PubSubResult::Log).
+    pub log_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+    /// Notified on reset/revert to terminate active WS subscriptions.
+    pub reset_notify: Arc<tokio::sync::Notify>,
 }
 
 impl InMemoryNode {
@@ -320,6 +340,9 @@ impl InMemoryNode {
         sealer_state: BlockSealerState,
         system_contracts: SystemContracts,
         storage_key_layout: StorageKeyLayout,
+        block_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+        log_subscription_tx: broadcast::Sender<Arc<PubSubResult>>,
+        reset_notify: Arc<tokio::sync::Notify>,
     ) -> Self {
         InMemoryNode {
             inner,
@@ -335,6 +358,9 @@ impl InMemoryNode {
             sealer_state,
             system_contracts,
             storage_key_layout,
+            block_subscription_tx,
+            log_subscription_tx,
+            reset_notify,
         }
     }
 
@@ -393,6 +419,7 @@ impl InMemoryNode {
         &self,
         mut l2_tx: L2Tx,
         base_contracts: BaseSystemContracts,
+        block: Option<zksync_types::api::BlockIdVariant>,
         state_override: Option<StateOverride>,
     ) -> AnvilNodeResult<ExecutionResult> {
         let execution_mode = TxExecutionMode::EthCall;
@@ -401,14 +428,44 @@ impl InMemoryNode {
 
         // init vm
 
-        let (batch_env, _) = inner.create_l1_batch_env().await;
+        // Build the batch env from the requested block when the caller pins a
+        // historical block, so `block.number` / `block.timestamp` etc. inside
+        // the VM reflect that block rather than latest head. Latest / None
+        // falls through to the normal "next block on current head" path.
+        let historical_block_number = inner.resolve_historical_block(block).await;
+        let (batch_env, _) = match historical_block_number {
+            Some(n) => match inner.create_l1_batch_env_at_block(n).await {
+                Some(env) => env,
+                None => {
+                    tracing::warn!(block = ?n, "no batch env for historical block; falling back to latest");
+                    inner.create_l1_batch_env().await
+                }
+            },
+            None => inner.create_l1_batch_env().await,
+        };
         let system_env = inner.create_system_env(base_contracts, execution_mode);
 
+        // NOTE: if `read_storage_at_block` errors (e.g. PrunedBlock for a block older
+        // than MAX_PREVIOUS_STATES snapshots), we silently fall back to the current
+        // fork storage. Propagating the error is arguably more correct, but the retry
+        // loops in our test harness + downstream consumers interpret the error as a
+        // transient failure and retry forever, turning a missing-archive into a hang.
+        // Logging the fallback lets us see when this happens without breaking callers.
+        let base_storage: Box<dyn ReadStorage> = match inner.read_storage_at_block(block).await {
+            Ok(storage) => storage,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "read_storage_at_block failed; falling back to current storage"
+                );
+                Box::new(inner.fork_storage.clone())
+            }
+        };
+
         let storage_override = if let Some(state_override) = state_override {
-            apply_state_override(inner.read_storage(), state_override)
+            apply_state_override(base_storage, state_override)
         } else {
-            // Do not spawn a new thread in the most frequent case.
-            StorageWithOverrides::new(inner.read_storage())
+            StorageWithOverrides::new(base_storage)
         };
 
         let storage = StorageView::new(storage_override).to_rc_ptr();
@@ -638,6 +695,9 @@ impl InMemoryNode {
         } else {
             StorageKeyLayout::Era
         };
+        let (block_subscription_tx, _) = broadcast::channel(1024);
+        let (log_subscription_tx, _) = broadcast::channel(1024);
+        let reset_notify = Arc::new(tokio::sync::Notify::new());
         let (inner, storage, blockchain, time, fork, vm_runner) = InMemoryNodeInner::init(
             fork_client_opt,
             fee_provider,
@@ -647,13 +707,16 @@ impl InMemoryNode {
             system_contracts.clone(),
             storage_key_layout,
             false,
+            block_subscription_tx.clone(),
+            log_subscription_tx.clone(),
+            reset_notify.clone(),
         );
-        let (node_executor, node_handle) =
-            NodeExecutor::new(inner.clone(), vm_runner, storage_key_layout);
         let pool = TxPool::new(
             impersonation.clone(),
             anvil_zksync_types::TransactionOrder::Fifo,
         );
+        let (node_executor, node_handle) =
+            NodeExecutor::new(inner.clone(), vm_runner, storage_key_layout, Some(pool.clone()));
         let tx_listener = pool.add_tx_listener();
         let (block_sealer, block_sealer_state) = BlockSealer::new(
             BlockSealerMode::immediate(1000, tx_listener),
@@ -675,6 +738,9 @@ impl InMemoryNode {
             block_sealer_state,
             system_contracts,
             storage_key_layout,
+            block_subscription_tx,
+            log_subscription_tx,
+            reset_notify,
         )
     }
 

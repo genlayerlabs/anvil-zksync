@@ -44,12 +44,11 @@ impl EthNamespaceServer for EthNamespace {
     async fn call(
         &self,
         req: CallRequest,
-        // TODO: Support
-        _block: Option<BlockIdVariant>,
+        block: Option<BlockIdVariant>,
         state_override: Option<StateOverride>,
     ) -> RpcResult<Bytes> {
         self.node
-            .call_impl(req, state_override)
+            .call_impl(req, block, state_override)
             .await
             .map_err(RpcErrorAdapter::into)
     }
@@ -317,8 +316,7 @@ impl EthNamespaceServer for EthNamespace {
             .map_err(RpcErrorAdapter::into)
     }
 
-    #[named]
     async fn max_priority_fee_per_gas(&self) -> RpcResult<U256> {
-        rpc_unsupported(function_name!())
+        Ok(U256::zero())
     }
 }
