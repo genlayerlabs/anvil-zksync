@@ -316,8 +316,7 @@ impl EthNamespaceServer for EthNamespace {
             .map_err(RpcErrorAdapter::into)
     }
 
-    #[named]
     async fn max_priority_fee_per_gas(&self) -> RpcResult<U256> {
-        rpc_unsupported(function_name!())
+        Ok(U256::zero())
     }
 }
